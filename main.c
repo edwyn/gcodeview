@@ -27,13 +27,21 @@
 #define		_GNU_SOURCE
 #endif
 
+#ifdef linux
 #include	<features.h>
+#endif
 
 #include	<stdlib.h>
 #include	<stdint.h>
 #include	<stdio.h>
+#ifdef _WIN32
+#include	<share.h>
+#endif
 
+
+#ifdef linux
 #include	<sys/mman.h>
+#endif
 #include	<sys/stat.h>
 #include	<sys/types.h>
 
@@ -41,11 +49,19 @@
 #include	<errno.h>
 #include	<string.h>
 #include	<fcntl.h>
-#include	<getopt.h>
 
+#ifdef linux
+#include	<getopt.h>
+#endif
+
+#ifdef _WIN32
+#include    "SDL\SDL.h"
+#endif
+#ifdef linux
 #include	<SDL/SDL.h>
 #include	<FTGL/ftgl.h>
 #include	<fontconfig/fontconfig.h>
+#endif
 
 #define		bool uint8_t
 #define		true	255
@@ -54,16 +70,25 @@
 #define		OPENGL
 
 #ifdef	OPENGL
+#ifdef _WIN32
+	#include	"SDL\SDL_opengl.h"
+#elif defined linux
 	#include	<SDL/SDL_opengl.h>
-	float transX, transY;
+#endif
+	float transX, transY, transZ;
 #else
+#ifdef _WIN32
+	#include	"SDL\SDL_gfxPrimitives.h"
+#elif defined linux
 	#include	<SDL_gfxPrimitives.h>
+#endif
 	float viewPortL, viewPortR, viewPortT, viewPortB;
 #endif
 
 // main loop fall-through flag
 bool Running;
 
+#ifdef linux
 // getopt stuff
 static const char *optString = "l:w:h?";
 static const struct option longOpts[] = {
@@ -71,6 +96,7 @@ static const struct option longOpts[] = {
 	{ "width", required_argument, NULL, 'w' },
 	{ 0      , 0                , 0   , 0   }
 };
+#endif
 
 // GCODE file related stuff
 int filesz;
@@ -93,8 +119,10 @@ typedef struct {
 } layerData;
 layerData* layer;
 
+#ifdef linux
 // FTGL stuff for drawing text
 FTGLfont* font = NULL;
+#endif
 char *msgbuf;
 
 // SDL window and GL Viewport
@@ -211,7 +239,11 @@ uint32_t scanline(char *line, int length, float *words, char **end) {
 					c &= ~0x20;
 				if (c >= 'A' && c <= 'Z') {
 					char *e;
+#ifdef WIN32
+                    float v = strtod(&line[i + 1], &e);
+#elif defined linux
 					float v = strtof(&line[i + 1], &e);
+#endif
 					if (e > &line[i + 1]) {
 						seen |= LMASK(c);
 						words[c - 'A'] = v;
@@ -293,7 +325,13 @@ void gline(float x1, float y1, float x2, float y2, float width, uint8_t r, uint8
 * create the quads for a layer, no wrappers                                 *
 *                                                                           *
 \***************************************************************************/
-
+#ifdef WIN32
+    #ifndef NAN
+        static const unsigned long __nan[2] = {0xffffffff, 0x7fffffff};
+        #define NAN (*(const float *) __nan)
+    #endif
+	#define isnan(x) ((x) != (x))
+#endif
 void render_layer(int clayer, float alpha) {
 	char *s = layer[clayer].index;
 	char *e = layer[clayer].index + layer[clayer].size;
@@ -404,8 +442,10 @@ void render() {
 			glPushMatrix();
 				glTranslatef(0.0, 200.0 - (20.0 * 0.3), 0.0);
 				glScalef(0.3, 0.3, 1.0);
+#ifdef linux
 				ftglSetFontFaceSize(font, 20, 20);
 				ftglRenderFont(font, msgbuf, FTGL_RENDER_ALL);
+#endif
 			glPopMatrix();
 			glFlush();
 			glFinish();
@@ -479,7 +519,9 @@ void resize(int w, int h) {
 \***************************************************************************/
 
 void drawLayer(int layerNum) {
+#ifdef linux
 	snprintf(msgbuf, 256, "Layer %3d: %gmm", layerNum, layer[layerNum].height);
+#endif
 //	printf("Drawing layer %3d (%5.2f)\n", layerNum, layer[layerNum].height);
 	currentLayer = layerNum;
 	render();
@@ -500,7 +542,7 @@ void scanLines() {
 	layerCount = 0;
 	// preallocate for 128 layers, we double the size later if it's not enough
 	layerSize = (128 * sizeof(layerData));
-	layer = malloc(layerSize);
+	layer = (layerData *)malloc(layerSize);
 
 	char *end;
 	uint32_t seen;
@@ -553,7 +595,7 @@ void scanLines() {
 						layer[layerCount - 1].size = layer[layerCount].index - layer[layerCount - 1].index;
 					layerCount++;
 					if ((layerCount + 1) * sizeof(layerData) > layerSize) {
-						layer = realloc(layer, layerSize << 1);
+						layer = (layerData *)realloc(layer, layerSize << 1);
 						if (layer == NULL)
 							die("Scan: realloc layer","");
 						layerSize <<= 1;
@@ -592,7 +634,7 @@ void scanLines() {
 
 	printf("%d layers OK\n", layerCount);
 
-	layer = realloc(layer, layerCount * sizeof(layerData));
+	layer = (layerData *)realloc(layer, layerCount * sizeof(layerData));
 	if (layer == NULL)
 		die("Scan: realloc layer","");
 	layerSize = layerCount * sizeof(layerData);
@@ -808,12 +850,39 @@ void handle_userevent(SDL_UserEvent user) {
 *                                                                           *
 \***************************************************************************/
 
-int main(int argc, char* argv[]) {
-	msgbuf = malloc(256);
+int main(int argc, char* argv[]) 
+{
+	msgbuf = (char *)malloc(256);
 	msgbuf[0] = 0;
 
 	currentLayer = 0;
+	int fd;
+#ifdef WIN32
+	struct __stat64 buf;
+#endif
 
+#ifdef WIN32
+    for ( int i = 0; i < argc; i++ )
+	{
+		if (argv[i][0] == '-') 
+		{
+			/* Use the next character to decide what to do. */
+			switch (argv[i][1]) 
+			{
+				case 'w':	extrusionWidth = atof(argv[++i]);
+							break;
+				case 'l':	currentLayer = atoi(argv[++i]);
+							break;
+				case 'h':   /* fall-through is intentional */
+				case '?':	display_usage();
+							break;
+				/*default:	display_usage();*/
+
+			}
+		}
+		printf ( "argv[%d] = %s, number of args %d\n", i, argv[i], argc );
+	} // end parsing commnd line arguments
+#elif defined linux
 	int longIndex;
 	int opt;
 	do {
@@ -849,8 +918,31 @@ int main(int argc, char* argv[]) {
 
 	if (optind >= argc)
 		display_usage();
+#endif
 
-	int fd = open(argv[optind], 0);
+#ifdef WIN32
+	int result = _stat64( argv[argc-1], &buf );
+    /* Check if statiscs are valid: */
+	if( result != 0 )
+	{
+      perror( "Problem getting information" );
+	}
+	else
+	{
+		printf( "File size     : %ld\n", buf.st_size );
+		filesz = buf.st_size;
+	}
+	
+	HANDLE f = CreateFile(argv[argc-1], GENERIC_READ, FILE_SHARE_READ,  NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL); 
+    HANDLE m; 
+	
+	if (!f) return NULL; 
+    m = CreateFileMapping(f, NULL, PAGE_READONLY, 0,0, NULL); 
+    if (!m) { CloseHandle(f); return NULL; } 
+    gcodefile = (char *)MapViewOfFile(m, FILE_MAP_READ, 0,0,0); 
+    if (!gcodefile) { CloseHandle(m); CloseHandle(f); return NULL; } 
+#else
+	fd = open(argv[optind], 0);
 	if (fd == -1)
 		die("Open ", argv[optind]);
 
@@ -859,10 +951,12 @@ int main(int argc, char* argv[]) {
 		die("fstat ", argv[optind]);
 
 	filesz = filestats.st_size;
-
+	
 	gcodefile = mmap(NULL, filesz, PROT_READ, MAP_PRIVATE | MAP_POPULATE, fd, 0);
 	if (gcodefile == MAP_FAILED)
 		die("mmap ", argv[optind]);
+#endif
+	
 
 	scanLines();
 
@@ -877,9 +971,10 @@ int main(int argc, char* argv[]) {
 
 	if (SDL_Init(SDL_INIT_EVERYTHING) < 0)
 		die("SDL_init", "");
-
+#ifdef linux
 	if (FcInitLoadConfigAndFonts() == ((void *) FcTrue))
 		die("FontConfig Init","");
+
 
 	// from http://www.spinics.net/lists/font-config/msg03050.html
 		FcPattern *pat, *match;
@@ -900,6 +995,7 @@ int main(int argc, char* argv[]) {
 	font = ftglCreateExtrudeFont(file);
 	if (!font)
 		die("FTGL createFont", "");
+#endif
 
 	#ifdef	OPENGL
 		transX = transY = 0.0;
@@ -969,5 +1065,11 @@ int main(int argc, char* argv[]) {
 	free(layer);
 	SDL_FreeSurface(Surf_Display);
 	SDL_Quit();
+
+#ifdef WIN32
+	UnmapViewOfFile(gcodefile);
+   // CloseHandle(hMapFile);
+   // CloseHandle(hFile);
+#endif
 	return 0;
 }
